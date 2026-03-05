@@ -1,0 +1,109 @@
+```{r}
+library(SeuratDisk)
+library(Seurat)
+library(SingleCellExperiment)
+library(Mfuzz)
+library(ggplot2)
+library(reshape2)
+```
+
+```{r}
+Expression_Eset_HNES <- table2eset("Capacitation_count_matrix_TFs_mean_HNES.tsv")
+```
+
+```{r}
+Expression_Eset_H9 <- table2eset("Capacitation_count_matrix_TFs_mean_H9.tsv")
+```
+
+
+--------------------------------kmean clustering for HNES--------------------------------------------
+
+
+```{r}
+kl_50c_HNES <- kmeans2(Expression_Eset_HNES,k=50, iter.max = 1000)
+```
+
+```{r}
+kmeans2.plot(Expression_Eset_HNES,kl=kl_50c_HNES, mfrow=c(5,5))
+dev.new()
+```
+
+
+
+```{r}
+saveRDS(kl_50c_HNES, file = 'MFuzz_kmean50_capacitation_HNES.RDS')
+```
+
+```{r}
+kl_50c_HNES <- readRDS('MFuzz_kmean50_capacitation_HNES.RDS')
+```
+
+
+
+---------------------------------------------------------------------------------------------------------------------------------------------------
+
+
+
+--------------------------kmean clustering for H9-----------------------------
+
+
+```{r}
+kl_50c_H9 <- kmeans2(Expression_Eset_H9,k=50, iter.max = 1000)
+```
+
+```{r}
+kmeans2.plot(Expression_Eset_H9,kl=kl_50c_H9, mfrow=c(5,5))
+dev.new()
+```
+
+
+
+```{r}
+saveRDS(kl_50c_H9, file = 'MFuzz_kmean50_capacitation_H9.RDS')
+```
+
+```{r}
+kl_50c_H9 <- readRDS('MFuzz_kmean50_capacitation_H9.RDS')
+```
+
+-------------------------------------------------------------------------------------------------------------------------------------------
+
+```{r}
+df_kl_50c_HNES <- as.data.frame(kl_50c_HNES$cluster)
+write.csv(df_kl_50c_HNES, 'MFuzz_kmean50_capacitation_HNES_TF2Cluster.csv')
+df_kl_50c_HNES
+```
+
+```{r}
+df_kl_50c_H9 <- as.data.frame(kl_50c_H9$cluster)
+write.csv(df_kl_50c_H9, 'MFuzz_kmean50_capacitation_H9_TF2Cluster.csv')
+df_kl_50c_H9
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
