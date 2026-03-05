@@ -1,0 +1,283 @@
+```{r}
+adj<-1e-15
+```
+
+```{r}
+CRANpackages<-c("xgboost","igraph","parallel")
+for(iP in 1:length(CRANpackages)){
+  tempPackage<-CRANpackages[iP]
+  pckg = try(require(tempPackage,character.only=T))
+  if(!pckg){
+    print(paste0("Installing '",tempPackage,"' from CRAN"))
+    install.packages(tempPackage,repos="http://cran.r-project.org")
+    require(tempPackage,character.only=T)
+  }
+}
+```
+
+```{r}
+library(ggplot2)
+```
+
+
+```{r}
+naive_hESC_lognormed_X <- read.csv('adata_naive_hESC_lognormed_X.csv', sep = ',', header = T, row.names = 'X')
+primed_hESC_lognormed_X <- read.csv('adata_primed_hESC_lognormed_X.csv', sep = ',', header = T, row.names = 'X')
+
+mean_expression_hESC_TFs <- read.csv('df_mean_expression_hESC_TFs.csv', sep = ',')
+
+mean_expression_hESC_Naive_H9_sorted_top5000 <- read.csv('df_mean_expression_hESC_Naive_H9_sorted_top5000.csv', sep = ',')
+mean_expression_hESC_Primed_H9_sorted_top5000 <- read.csv('df_mean_expression_hESC_Primed_H9_sorted_top5000.csv', sep = ',')
+```
+
+```{r}
+TFs_expressed <- mean_expression_hESC_TFs['GENE.ID']
+
+Top5000_naive_HEG <- mean_expression_hESC_Naive_H9_sorted_top5000['GENE.ID']
+Top5000_primed_HEG <- mean_expression_hESC_Primed_H9_sorted_top5000['GENE.ID']
+```
+
+```{r}
+naive_hESC_lognormed_X
+```
+
+
+```{r}
+df_Gain_Main <- 0
+
+Loop_num <- 0
+
+for (i in Top5000_primed_HEG$GENE.ID)
+{
+  Loop_num <- Loop_num + 1
+  
+  Y_vals <- primed_hESC_lognormed_X[i,]
+  X_vals <- primed_hESC_lognormed_X[rownames(primed_hESC_lognormed_X) %in% TFs_expressed[,'GENE.ID'] & !(rownames(primed_hESC_lognormed_X) %in% i),]
+  X_vals <- t(X_vals)
+  
+  tempFit<-tryCatch(xgboost(data=X_vals, label=Y_vals, eta=0.5,max_depth=5,nrounds=100,verbose=F),
+                  error=function(e){return(NA)})
+  tempImp<-xgb.importance(model=tempFit)
+  
+  TF_names <- tempImp$Feature
+  Gain <- tempImp$Gain
+  
+  df_Gain <- data.frame(TF_names, Gain)
+  colnames(df_Gain) <- c('TF_names', paste('Gain_of_', i, sep = ''))
+  
+  if (df_Gain_Main == 0)
+  {
+    print('First loop')
+    df_Gain_Main <- df_Gain
+  }
+  else
+  {
+    df_Gain_Main <- merge(df_Gain_Main, df_Gain, by = 'TF_names', all = TRUE)
+  }
+  
+  print(paste(i, ' Done', as.character(Loop_num), '/5000'))
+}
+
+write.csv(df_Gain_Main, 'df_Gain_Main_Primed.csv', row.names = F)
+```
+
+```{r}
+write.csv(df_Gain_Main, 'df_Gain_Main_Naive.csv', row.names = F)
+```
+
+
+
+```{r}
+Top5000_naive_HEG$GENE.ID[1:3]
+```
+
+```{r}
+tempImp<-xgb.importance(model=tempFit)
+tempStats<-as.matrix(tempImp[,"Gain"])[,1]
+tempStats
+```
+
+```{r}
+TF_names <- tempImp$Feature
+Gain <- tempImp$Gain
+
+new_data_frame <- data.frame(Gain)
+colnames(new_data_frame) <- c('Gain_of_')
+rownames(new_data_frame) <- TF_names
+new_data_frame
+```
+
+```{r}
+merged_dataframe <- merge(new_data_frame, naive_hESC_lognormed_X, by = 0, all = TRUE)
+```
+
+```{r}
+merged_dataframe
+```
+
+
+
+```{r}
+df_Gain_Main_Naive <- read.csv('df_Gain_Main_Naive.csv', sep = ',')
+df_Gain_Main_Primed <- read.csv('df_Gain_Main_Primed.csv', sep = ',')
+```
+
+```{r}
+df_Gain_Main_Naive
+```
+
+```{r}
+#Num_of_Col_Naive <- length(colnames(df_Gain_Main_Naive))
+df_Gain_Main_Naive$Total_Gain <- rowSums(df_Gain_Main_Naive[ , c(2:5001)], na.rm=TRUE)
+
+#Num_of_Col_Primed <- length(colnames(df_Gain_Main_Primed))
+df_Gain_Main_Primed$Total_Gain <- rowSums(df_Gain_Main_Primed[ , c(2:5001)], na.rm=TRUE)
+```
+
+```{r}
+df_Gain_Main_Naive[,c(5001,5002)]
+df_Gain_Main_Primed[,c(5001,5002)]
+```
+
+```{r}
+write.csv(df_Gain_Main_Naive, 'df_Gain_Main_Naive_withTotalGain.csv', row.names = F)
+write.csv(df_Gain_Main_Primed, 'df_Gain_Main_Primed_withTotalGain.csv', row.names = F)
+```
+
+```{r}
+df_TotalGain_only_Naive <- df_Gain_Main_Naive[,c(1,5002)]
+df_TotalGain_only_Primed <- df_Gain_Main_Primed[,c(1,5002)]
+
+write.csv(df_TotalGain_only_Naive, 'df_TotalGain_only_Naive.csv', row.names = F)
+write.csv(df_TotalGain_only_Primed, 'df_TotalGain_only_Primed.csv', row.names = F)
+```
+
+```{r}
+df_TotalGain_only_Naive_descending <- df_TotalGain_only_Naive[order(-df_TotalGain_only_Naive$Total_Gain), ]
+df_TotalGain_only_Primed_descending <- df_TotalGain_only_Primed[order(-df_TotalGain_only_Primed$Total_Gain), ]
+```
+
+
+```{r}
+df_TotalGain_only_Naive_descending
+df_TotalGain_only_Primed_descending
+```
+
+```{r}
+df_TotalGain_only_Primed_descending[df_TotalGain_only_Primed_descending$TF_names == 'NANOG', ]
+```
+
+
+```{r}
+#Make dataframe into ggplot format
+
+df_TotalGain_only_Naive <- read.csv('df_TotalGain_only_Naive.csv', sep = ',', header = T)
+df_TotalGain_only_Primed <- read.csv('df_TotalGain_only_Primed.csv', sep = ',', header = T)
+
+df_TotalGain_only_Naive_forggplot <- df_TotalGain_only_Naive
+df_TotalGain_only_Primed_forggplot <- df_TotalGain_only_Primed
+
+df_TotalGain_only_Naive_forggplot$Cell_type = 'Naive'
+df_TotalGain_only_Primed_forggplot$Cell_type = 'Primed'
+
+df_TotalGain_only_Naive_forggplot
+```
+```{r}
+df_TotalGain_only_combined_forggplot <- rbind(df_TotalGain_only_Naive_forggplot, df_TotalGain_only_Primed_forggplot)
+df_TotalGain_only_combined_forggplot
+```
+
+```{r}
+TFs_of_interest <- c('SALL2', 'TCF7L1', 'TCF7L2', 'RFX3', 'RFX7', 'CBX2', 'E2F5', 'ZNF660', 'HDX', 'ARHGAP35')
+df_TotalGain_only_combined_forggplot$Highlight = df_TotalGain_only_combined_forggplot$TF_names %in% TFs_of_interest
+df_TotalGain_only_combined_forggplot
+```
+
+```{r}
+df_TotalGain_only_combined_forggplot[df_TotalGain_only_combined_forggplot$TF_name == 'SOX2', ]
+```
+
+
+
+```{r}
+SON_TF <- c('SOX2', 'POU5F1', 'NANOG')
+df_TotalGain_only_combined_forggplot$SON_TF = df_TotalGain_only_combined_forggplot$TF_names %in% SON_TF
+df_TotalGain_only_combined_forggplot
+```
+
+
+```{r}
+df_Highlighted_TFs_forggplot <- df_TotalGain_only_combined_forggplot[df_TotalGain_only_combined_forggplot$Highlight == TRUE,]
+```
+
+```{r}
+df_SON_TFs_forggplot <- df_TotalGain_only_combined_forggplot[df_TotalGain_only_combined_forggplot$SON_TF == TRUE,]
+```
+
+```{r}
+df_SON_TFs_forggplot
+```
+
+
+```{r}
+Violin_Plot <- ggplot(df_TotalGain_only_combined_forggplot, aes(x = Cell_type, y = Total_Gain)) + 
+  geom_violin(trim=FALSE) +
+  #theme_light() + 
+  geom_point(shape=16, 
+             #position=position_jitter(0.2), 
+             aes(colour = Highlight, alpha = Highlight)) +
+  scale_color_manual(values=c("black", "red")) +
+  scale_alpha_discrete(range = c(0.0, 1)) +
+  ylim(0,20) +
+  geom_text(data = df_Highlighted_TFs_forggplot, aes(x=Cell_type, y=Total_Gain,label=TF_names),size=7,position=position_jitter(0.3))
+
+Violin_Plot
+```
+```{r}
+ggsave(
+  'XGB_score_hESC_2.png',
+  plot = Violin_Plot,
+  scale = 1,
+  width = 10,
+  height = 10,
+  dpi = 300,
+  limitsize = TRUE,
+  bg = NULL,
+
+)
+```
+
+```{r}
+Violin_Plot <- ggplot(df_TotalGain_only_combined_forggplot, aes(x = Cell_type, y = Total_Gain)) + 
+  geom_violin(trim=FALSE) +
+  #theme_light() + 
+  geom_point(shape=16, 
+             #position=position_jitter(0.2), 
+             aes(colour = SON_TF, alpha = SON_TF)) +
+  scale_color_manual(values=c("black", "red")) +
+  scale_alpha_discrete(range = c(0.0, 1)) +
+  ylim(0,80) +
+  geom_text(data = df_SON_TFs_forggplot, aes(x=Cell_type, y=Total_Gain,label=TF_names),size=7,position=position_jitter(0.3))
+
+Violin_Plot
+```
+
+```{r}
+ggsave(
+  'XGB_score_hESC_SON_TFs_2.png',
+  plot = Violin_Plot,
+  scale = 1,
+  width = 10,
+  height = 10,
+  dpi = 300,
+  limitsize = TRUE,
+  bg = NULL,
+
+)
+```
+
+
+
+
+
+
