@@ -1,0 +1,389 @@
+```{r}
+library(Signac)
+library(Seurat)
+library(GenomeInfoDb)
+library(TFBSTools)
+library(JASPAR2022) # or JASPAR2024 if available
+library(BSgenome.Hsapiens.UCSC.hg38) # change genome as needed
+library(rtracklayer)
+library(EnsDb.Hsapiens.v86)
+library(motifmatchr)
+library(chromVAR)
+library(BiocParallel)
+library(SeuratDisk)
+```
+
+```{r}
+library(JASPAR2022)
+library(Matrix)
+library(ggplot2)
+library(scales)
+library(cowplot)
+```
+
+
+```{r}
+# paths
+fragpath <- "HUA8138A3/outs/fragments.tsv.gz"
+
+# 1) peaks
+peaks <- rtracklayer::import("HUA8138A3/outs/peaks.bed")
+peaks <- keepStandardChromosomes(peaks, pruning.mode = "coarse")
+peaks <- sort(peaks)
+
+# 2) fragments (ensure the .tbi exists next to the .gz)
+frags <- CreateFragmentObject(
+  path = fragpath
+  # , cells = readLines("HUA8138A4/outs/filtered_peak_bc_matrix/barcodes.tsv.gz") # optional filter
+)
+
+# 3) counts matrix over peaks
+counts <- FeatureMatrix(
+  fragments = frags,
+  features  = peaks
+)
+
+# 4) chromatin assay
+atac <- CreateChromatinAssay(
+  counts    = counts,
+  sep       = c(":", "-"),
+  genome    = "hg38",
+  fragments = frags
+)
+
+# 5) Seurat object
+obj <- CreateSeuratObject(
+  counts = atac,
+  assay  = "ATAC"
+)
+
+DefaultAssay(obj) <- "ATAC"
+```
+
+```{r}
+# Gene annotation (for TSS, gene annotations)
+annotation <- GetGRangesFromEnsDb(EnsDb.Hsapiens.v86)
+seqlevelsStyle(annotation) <- "UCSC"   # e.g., "chr1"
+genome(annotation) <- "hg38"
+Annotation(obj) <- annotation
+
+# TSS enrichment & nucleosome signal
+obj <- TSSEnrichment(obj, fast = TRUE)
+obj <- NucleosomeSignal(obj)
+
+# Fraction of reads in peaks (FRiP) & blacklist ratio if you have a blacklist GRanges
+#obj$pct_reads_in_peaks <- obj$peak_region_fragments / #obj$nCount_ATAC * 100
+
+```
+
+```{r}
+#Optional frag_stats QC
+
+frag_stats <- Signac::CountFragments(fragments = frags)
+
+#Normalize column names if needed (handles version/name differences)
+cn <- colnames(frag_stats)
+if ("reads_in_peaks" %in% cn && !"peak_region_fragments" %in% cn) {
+  frag_stats$peak_region_fragments <- frag_stats$reads_in_peaks
+}
+if ("fragments" %in% cn && !"passed_filters" %in% cn) {
+  frag_stats$passed_filters <- frag_stats$fragments
+}
+
+#Keep only cells present in your object, and order rows to match colnames(obj)
+frag_stats <- frag_stats[frag_stats$barcode %in% colnames(obj), ]
+frag_stats <- frag_stats[match(colnames(obj), frag_stats$barcode), ]
+
+#Add to metadata
+rownames(frag_stats) <- frag_stats$barcode
+to_add <- frag_stats[, intersect(colnames(frag_stats),
+                                 c("passed_filters","peak_region_fragments","blacklist_fraction"))]
+obj <- AddMetaData(obj, metadata = to_add)
+```
+
+```{r}
+# Quick QC filters
+obj <- subset(
+  obj,
+  subset =
+    nCount_ATAC > 3000 &
+    nCount_ATAC < 100000 &
+    #pct_reads_in_peaks > 15 &
+    TSS.enrichment > 2 &
+    nucleosome_signal < 4
+)
+```
+
+
+```{r}
+# 6) Dimensionality reduction (TF-IDF + LSI)
+
+obj <- RunTFIDF(obj)
+obj <- FindTopFeatures(obj, min.cutoff = "q0") # keep all peaks for LSI
+obj <- RunSVD(obj, reduction.key = "LSI_", reduction.name = "lsi")
+
+# Neighborhood graph, UMAP, clusters
+obj <- RunUMAP(obj, reduction = "lsi", dims = 2:30)
+obj <- FindNeighbors(obj, reduction = "lsi", dims = 2:30)
+obj <- FindClusters(obj, resolution = 0.5)
+
+DimPlot(obj, reduction = "umap", group.by = "seurat_clusters")
+```
+
+```{r}
+obj <- FindNeighbors(obj, reduction = "lsi", dims = 2:30, graph.name = "lsi_snn")
+obj <- FindClusters(obj, graph.name = 'lsi_snn', resolution = 0.2) # Adjust resolution as needed
+```
+
+```{r}
+DimPlot(obj, reduction = "lsi", group.by = "seurat_clusters", dims = c(2, 3)) +
+  scale_color_manual(values = c("#1f77b4", "#ff7f0e", "#279e68", "#d62728", "#aa40fc"))
+```
+
+```{r}
+pdf("LSI_SALL2KO_5clusters.pdf", width = 6, height = 6)
+DimPlot(obj, reduction = "lsi", group.by = "seurat_clusters", dims = c(2, 3)) +
+  scale_color_manual(values = c("#1f77b4", "#ff7f0e", "#279e68", "#d62728", "#aa40fc"))
+dev.off()
+```
+
+```{r}
+FeaturePlot(obj, features = "TSS.percentile", reduction = "lsi")
+```
+
+```{r}
+# 7) Add motifs to peaks
+
+pfm <- getMatrixSet(
+  x = JASPAR2022,
+  opts = list(species = 9606, collection = "CORE")
+)
+
+obj <- AddMotifs(
+  object = obj,
+  genome = BSgenome.Hsapiens.UCSC.hg38,
+  pfm    = pfm
+)
+```
+
+```{r}
+# 8) Run chromVAR
+
+# (chromVAR will compute GC bias, background peaks, then deviations)
+
+register(SerialParam())
+
+obj <- RunChromVAR(
+  object = obj,
+  genome = BSgenome.Hsapiens.UCSC.hg38
+)
+
+DefaultAssay(obj) <- "chromvar"
+```
+
+```{r}
+saveRDS(obj, file = "atac_chromvar_SALL2KO.rds")
+```
+
+```{r}
+# Test plot by using assigned motif names
+FeaturePlot(obj, features = c("MA0490.2"), min.cutoff = "q10", dims = c(2,3), reduction = 'lsi')
+```
+
+```{r}
+# Differential motif activity between clusters (e.g., cluster 0 vs all)
+DefaultAssay(obj) <- "chromvar"
+Idents(obj) <- "seurat_clusters"
+
+Cluster <- "4"
+markers_motifs <- FindMarkers(
+  object = obj,
+  ident.1 = Cluster,
+  only.pos = TRUE,
+  assay   = "chromvar",
+  test.use = "wilcox"
+)
+head(markers_motifs)
+```
+
+```{r}
+write.csv(markers_motifs, paste0("cluster",Cluster,"_motifs_5clusters.csv"), row.names = TRUE)
+```
+
+
+```{r}
+# 9) Explore TF motif activity (chromVAR deviations)
+
+
+# Heatmap of selected motif activities (choose a set of motifs)
+DefaultAssay(obj) <- "chromvar"
+motifs_to_plot <- rownames(markers_motifs)[1:20]
+DoHeatmap(obj, features = motifs_to_plot, group.by = "seurat_clusters")
+```
+
+
+```{r}
+obj <- readRDS("atac_chromvar_SALL2KO.rds")
+```
+
+```{r}
+dim(Embeddings(obj, "lsi"))
+```
+
+```{r}
+#Optional: convert object to h5ad for analysis in Scanpy
+
+obj <- DietSeurat(
+  obj,
+  assays     = c("ATAC", "chromvar"),   
+  dimreducs  = c("lsi", "umap"),
+  counts     = TRUE,
+  data       = TRUE,
+  scale.data = FALSE,
+  graphs     = NULL
+)
+
+SaveH5Seurat(obj, filename = "atac_chromvar_SALL2KO.h5Seurat")
+Convert("atac_chromvar_SALL2KO.h5Seurat", dest = "h5ad")
+```
+
+
+```{r}
+# Get a tf_name to motif match file
+
+motifs <- getMatrixSet(JASPAR2022, opts = list(species = 9606, collection = "CORE"))
+
+# Convert to data frame
+motif_meta <- as.data.frame(do.call(rbind, lapply(motifs, function(m) {
+  data.frame(
+    motif_id = ID(m),
+    tf_name  = name(m),
+    family   = m@tags$family,
+    stringsAsFactors = FALSE
+  )
+})))
+head(motif_meta)
+
+write.csv(motif_meta, paste0("tf_name_to_motif.csv"), row.names = TRUE)
+```
+
+```{r}
+#Experimental: Count normalized motif intensity
+
+# 1) get the binary peak×motif match matrix
+motif_mat <- GetMotifData(obj, assay = "ATAC", slot = "data")  # peaks x motifs
+
+# 2) find peaks that contain the motif (ID = MA0490.2)
+motif_id <- "MA0143.4"
+stopifnot(motif_id %in% colnames(motif_mat))
+peaks_with_motif <- rownames(motif_mat)[motif_mat[, motif_id] > 0]
+
+# 3) extract counts for those peaks and compute per-cell sums/fractions
+DefaultAssay(obj) <- "ATAC"
+peak_counts <- GetAssayData(obj, slot = "counts")[peaks_with_motif, , drop = FALSE]
+
+# per-cell raw intensity (sum of fragments in motif peaks)
+motif_intensity <- Matrix::colSums(peak_counts)
+
+# fraction of each cell’s ATAC counts that fall in motif peaks (size-adjusted)
+motif_fraction <- motif_intensity / obj$nCount_ATAC
+
+# add to metadata
+obj$motif_id_current  <- as.numeric(motif_intensity)
+obj$motif_id_current <- as.numeric(motif_fraction)
+```
+
+
+```{r}
+# Following scripts are for better visualization with violin plots
+```
+
+
+```{r}
+DefaultAssay(obj) <- "chromvar"
+
+DimPlot(obj, reduction = "lsi", group.by = "seurat_clusters", dims = c(2, 3)) +
+  scale_color_manual(values = c("#1f77b4", "#ff7f0e", "#279e68", "#d62728", "#aa40fc"))
+FeaturePlot(obj, features = "MA1557.1", reduction = "lsi", dims = c(2,3), min.cutoff = "q10")  # size-adjusted
+p <- VlnPlot(obj, features = "MA1557.1", group.by = "seurat_clusters", pt.size = 0)
+
+custom_colors <- c("#1f77b4", "#ff7f0e", "#279e68", "#d62728", "#aa40fc")
+p + scale_fill_manual(values = custom_colors)
+```
+
+
+```{r}
+# Compute medians per cluster
+feature <- "MA1557.1"
+group_var <- "seurat_clusters"
+
+# Extract data
+data <- FetchData(obj, vars = c(feature, group_var))
+
+# Compute median expression by cluster
+medians <- tapply(data[[feature]], data[[group_var]], median)
+
+# Optionally, create a color gradient based on median values
+# e.g. low = blue, high = red
+color_palette <- scales::col_numeric(
+  palette = c("white", "red"),
+  domain = range(medians)
+)(medians)
+
+# Match cluster order in plot
+cluster_order <- levels(obj[[group_var]][,1])
+cluster_colors <- setNames(color_palette[cluster_order], cluster_order)
+
+# Make violin plot
+p <- VlnPlot(
+  obj,
+  features = feature,
+  group.by = group_var,
+  pt.size = 0
+)
+
+# Apply colors manually
+p + scale_fill_manual(values = color_palette)
+```
+
+```{r}
+
+med_range <- range(medians)
+
+# Make dummy data for the color bar
+df_bar <- data.frame(x = seq(med_range[1], med_range[2], length.out = 100),
+                     y = 1)
+
+# Plot color bar
+p2 <- ggplot(df_bar, aes(x = x, y = y, fill = x)) +
+  geom_tile() +
+  scale_fill_gradient(
+    low = "white",
+    high = "red",
+    name = "Median Expression",
+    limits = med_range
+  ) +
+  theme_minimal() +
+  theme(
+    axis.title = element_blank(),
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+    panel.grid = element_blank(),
+    legend.position = "bottom"
+  ) +
+  guides(
+    fill = guide_colorbar(
+      title.position = "top",
+      barwidth = unit(4, "in"),
+      barheight = unit(0.3, "cm")
+    )
+  )
+p + scale_fill_manual(values = color_palette) + p2
+```
+
+```{r}
+pdf("SMAD5_motif.pdf", width = 6, height = 6)
+p + scale_fill_manual(values = color_palette) + p2
+dev.off()
+```
+
