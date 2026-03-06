@@ -1,0 +1,83 @@
+```{r}
+library(DiffBind)
+```
+
+```{r}
+# Load sample sheet
+samples <- read.csv("Samples.csv")
+
+# Create DBA object
+dba_obj <- dba(sampleSheet = samples)
+```
+
+```{r}
+# Plot sample clustering
+dba.plotHeatmap(dba_obj) # This will plot the correlation of samples across all peaks based on the raw count values
+```
+
+```{r}
+# Since we only have 2 replicates (biological replicates) for each condition. We want to force the code to perform the analysis. So we manually specify the groups.
+
+# Assign group 1 (Condition A): samples 1 and 2
+groupA <- c(1, 2)
+
+# Assign group 2 (Condition B): samples 3 and 4
+groupB <- c(3, 4)
+
+# Manually define contrast
+dba_obj <- dba.contrast(dba_obj, group1=groupA, group2=groupB, name1="E8", name2="N2B27")
+```
+
+```{r}
+# Run differential analysis (DESeq2 is default)
+dba_obj <- dba.analyze(dba_obj)
+```
+
+```{r}
+# Plot sample clustering
+dba.plotHeatmap(dba_obj) # This will plot the correlation of samples across only differentially bound regions based on the normalized count values
+```
+
+```{r}
+# Export results to CSV
+results <- dba.report(dba_obj)
+write.csv(as.data.frame(results), "SALL2_differential_binding_p0.01.csv")
+```
+
+```{r}
+results2 <- dba.report(dba_obj, contrast=1, bUsePval=FALSE, th=1)
+write.csv(as.data.frame(results2), "SALL2_differential_binding_all_p0.01.csv")
+```
+
+```{r}
+# Use DiffBind to get overlaps
+dba.overlap(dba_obj, mode=DBA_OLAP_RATE)
+# Venn plot (2 samples or groups)
+dba.plotVenn(dba_obj, mask=c(1,2,3,4))
+```
+
+```{r}
+pdf("Venn_plot.pdf", width = 10, height = 6)
+# Venn plot (2 samples or groups)
+dba.plotVenn(dba_obj, mask=c(1,2,3,4))
+dev.off()
+```
+
+```{r}
+# Even if not statistically powered, this is still valid
+dba.plotMA(dba_obj, contrast=1, bUsePval=FALSE)
+```
+
+```{r}
+dba.plotMA(dba_obj, contrast=1, bUsePval=TRUE)
+```
+
+```{r}
+pdf("MA_plot.pdf", width = 10, height = 6)
+dba.plotMA(dba_obj, contrast=1, bUsePval=FALSE, bSignificant = FALSE)
+dev.off()
+```
+
+
+
+
