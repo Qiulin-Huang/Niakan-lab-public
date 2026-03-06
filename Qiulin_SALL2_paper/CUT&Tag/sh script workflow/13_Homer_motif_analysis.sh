@@ -1,0 +1,1 @@
+findMotifsGenome.pl n2_n3_overlapping_peaks.narrowPeak hg19 Motif_analysis/
